@@ -302,74 +302,62 @@ http.createServer(async (req, res) => {
     }
 
     if (url.pathname === '/api/pair' && req.method === 'POST') {
-        let body = '';
-        req.on('data', chunk => body += chunk);
-        req.on('end', async () => {
-            try {
-                const params = new URLSearchParams(body);
-                let phoneNumber = params.get('phone').trim();
-                
-                if (!phoneNumber) {
-                    res.writeHead(400, { 'Content-Type': 'application/json' });
-                    res.end(JSON.stringify({ error: 'Phone number is required' }));
-                    return;
-                }
-
-                phoneNumber = phoneNumber.replace(/\D/g, '');
-                if (phoneNumber.length < 8) {
-                    res.writeHead(400, { 'Content-Type': 'application/json' });
-                    res.end(JSON.stringify({ error: 'Invalid phone number' }));
-                    return;
-                }
-
-                console.log(`📱 Requesting pairing code for: ${phoneNumber}, Bot status: ${botStatus}`);
-                
-                if (botStatus !== 'connecting' || !sock) {
-                    res.writeHead(400, { 'Content-Type': 'application/json' });
-                    res.end(JSON.stringify({ 
-                        error: `Bot not ready for pairing. Current status: ${botStatus}. Please wait for "connecting" state.` 
-                    }));
-                    return;
-                }
-
-                const pairingCode = await sock.requestPairingCode(phoneNumber);
-                
-                pairingCodes.set(phoneNumber, {
-                    code: pairingCode,
-                    timestamp: Date.now()
-                });
-                const now = Date.now();
-                for (let [number, data] of pairingCodes.entries()) {
-                    if (now - data.timestamp > 10 * 60 * 1000) {
-                        pairingCodes.delete(number);
-                    }
-                }
-
-                res.writeHead(200, { 'Content-Type': 'application/json' });
-                res.end(JSON.stringify({ 
-                    success: true,
-                    phoneNumber: phoneNumber,
-                    pairingCode: pairingCode
-                }));
-
-                console.log(`✅ Pairing code generated for ${phoneNumber}: ${pairingCode}`);
-                
-            } catch (error) {
-                console.error(' Pairing code error:', error);
-                
-                let errorMessage = error.message;
-                if (errorMessage.includes('check phone number')) {
-                    errorMessage = 'Please check your phone number and try again. Make sure it includes country code without +.';
-                } else if (errorMessage.includes('not registered')) {
-                    errorMessage = 'This phone number is not registered on WhatsApp.';
-                }
-                
-                res.writeHead(500, { 'Content-Type': 'application/json' });
-                res.end(JSON.stringify({ error: errorMessage }));
+    let body = '';
+    req.on('data', chunk => body += chunk);
+    req.on('end', async () => {
+        try {
+            const params = new URLSearchParams(body);
+            let phoneNumber = params.get('phone')?.trim();
+            
+            if (!phoneNumber) {
+                res.writeHead(400, { 'Content-Type': 'application/json' });
+                return res.end(JSON.stringify({ error: 'Phone number is required' }));
             }
-        });
-        return;
-    }
+            
+            phoneNumber = phoneNumber.replace(/\D/g, '');
+            if (phoneNumber.length < 8) {
+                res.writeHead(400, { 'Content-Type': 'application/json' });
+                return res.end(JSON.stringify({ error: 'Invalid phone number' }));
+            }
+            
+            console.log(`📱 Generating pairing code for: ${phoneNumber}`);
+            
+            // Create a temporary short-lived socket for Render
+            const { state, saveCreds } = await useMultiFileAuthState(AUTH_FOLDER);
+            const { version } = await fetchLatestWaWebVersion();
+            
+            const tempSock = makeWASocket({
+                version,
+                logger: pino({ level: 'silent' }),
+                printQRInTerminal: false,
+                auth: state,
+                browser: ['ABZTech', 'Chrome', '1.0.0']
+            });
+            
+            // Give it a few seconds to connect
+            await new Promise(r => setTimeout(r, 2500));
+            
+            const pairingCode = await tempSock.requestPairingCode(phoneNumber);
+            
+            // Close connection immediately (Render-safe)
+            try { tempSock.ws.close(); } catch {}
+            
+            res.writeHead(200, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({
+                success: true,
+                phoneNumber,
+                pairingCode
+            }));
+            
+            console.log(`✅ Pairing code generated for ${phoneNumber}: ${pairingCode}`);
+        } catch (error) {
+            console.error('❌ Pairing code error:', error);
+            res.writeHead(500, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ error: error.message }));
+        }
+    });
+    return;
+}
 
     res.writeHead(404);
     res.end('Not found');
