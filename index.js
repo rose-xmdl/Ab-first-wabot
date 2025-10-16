@@ -322,34 +322,45 @@ http.createServer(async (req, res) => {
             
             console.log(`📱 Generating pairing code for: ${phoneNumber}`);
             
-            // Create a temporary short-lived socket for Render
-            const { state, saveCreds } = await useMultiFileAuthState(AUTH_FOLDER);
+            // ✅ Create a unique session folder per phone number
+            const sessionDir = path.join(__dirname, 'sessions', phoneNumber);
+            if (!fs.existsSync(sessionDir)) fs.mkdirSync(sessionDir, { recursive: true });
+            
+            // ✅ Use this folder for a new Baileys connection
+            const { state, saveCreds } = await useMultiFileAuthState(sessionDir);
             const { version } = await fetchLatestWaWebVersion();
             
+            // ✅ Make short-lived socket (Render-safe)
             const tempSock = makeWASocket({
                 version,
                 logger: pino({ level: 'silent' }),
                 printQRInTerminal: false,
                 auth: state,
-                browser: [ "Ubuntu", "Chrome", "20.0.04" ]
+                browser: [ "Ubuntu", "Chrome", "20.0.04" ],
+                markOnlineOnConnect: false,
+                syncFullHistory: false,
             });
             
-            // Give it a few seconds to connect
-            await new Promise(r => setTimeout(r, 2500));
+            // Wait a bit for connection to initialize
+            await new Promise(r => setTimeout(r, 2000));
             
+            // ✅ Request the pairing code
             const pairingCode = await tempSock.requestPairingCode(phoneNumber);
             
-            // Close connection immediately (Render-safe)
+            // ✅ Close connection (Render-safe)
             try { tempSock.ws.close(); } catch {}
+            
+            // ✅ Save creds in DB for backup
+            saveAuthFilesToDB();
             
             res.writeHead(200, { 'Content-Type': 'application/json' });
             res.end(JSON.stringify({
                 success: true,
                 phoneNumber,
-                pairingCode
+                pairingCode,
             }));
             
-            console.log(`✅ Pairing code generated for ${phoneNumber}: ${pairingCode}`);
+            console.log(`✅ Real pairing code ready for ${phoneNumber}: ${pairingCode}`);
         } catch (error) {
             console.error('❌ Pairing code error:', error);
             res.writeHead(500, { 'Content-Type': 'application/json' });
