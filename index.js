@@ -311,60 +311,82 @@ http.createServer(async (req, res) => {
             
             if (!phoneNumber) {
                 res.writeHead(400, { 'Content-Type': 'application/json' });
-                return res.end(JSON.stringify({ error: 'Phone number is required' }));
+                res.end(JSON.stringify({ error: 'Phone number is required' }));
+                return;
             }
             
             phoneNumber = phoneNumber.replace(/\D/g, '');
             if (phoneNumber.length < 8) {
                 res.writeHead(400, { 'Content-Type': 'application/json' });
-                return res.end(JSON.stringify({ error: 'Invalid phone number' }));
+                res.end(JSON.stringify({ error: 'Invalid phone number' }));
+                return;
             }
             
             console.log(`📱 Generating pairing code for: ${phoneNumber}`);
             
-            // ✅ Create a unique session folder per phone number
+            // ✅ Create short-lived isolated session for Render
             const sessionDir = path.join(__dirname, 'sessions', phoneNumber);
             if (!fs.existsSync(sessionDir)) fs.mkdirSync(sessionDir, { recursive: true });
             
-            // ✅ Use this folder for a new Baileys connection
             const { state, saveCreds } = await useMultiFileAuthState(sessionDir);
             const { version } = await fetchLatestWaWebVersion();
             
-            // ✅ Make short-lived socket (Render-safe)
+            // ✅ Temporary connection — Render-safe
             const tempSock = makeWASocket({
                 version,
                 logger: pino({ level: 'silent' }),
                 printQRInTerminal: false,
                 auth: state,
-                browser: [ "Ubuntu", "Chrome", "20.0.04" ],
+                browser: ['Render', 'Chrome', '1.0.0'],
                 markOnlineOnConnect: false,
-                syncFullHistory: false,
+                syncFullHistory: false
             });
             
-            // Wait a bit for connection to initialize
-            await new Promise(r => setTimeout(r, 2000));
+            // Wait a short moment for Baileys to initialize
+            await new Promise(r => setTimeout(r, 2500));
             
-            // ✅ Request the pairing code
+            // ⚡ Request pairing code
             const pairingCode = await tempSock.requestPairingCode(phoneNumber);
+            console.log(`✅ Real pairing code generated for ${phoneNumber}: ${pairingCode}`);
             
-            // ✅ Close connection (Render-safe)
+            // Immediately close socket to prevent Render timeout
             try { tempSock.ws.close(); } catch {}
             
-            // ✅ Save creds in DB for backup
-            saveAuthFilesToDB();
+            // Store pairing code for reference
+            pairingCodes.set(phoneNumber, {
+                code: pairingCode,
+                timestamp: Date.now()
+            });
             
+            // Auto-cleanup after 10 minutes
+            setTimeout(() => {
+                pairingCodes.delete(phoneNumber);
+                if (fs.existsSync(sessionDir)) {
+                    fs.rmSync(sessionDir, { recursive: true, force: true });
+                    console.log(`🗑️ Deleted expired session for ${phoneNumber}`);
+                }
+            }, 10 * 60 * 1000);
+            
+            // Respond with pairing code
             res.writeHead(200, { 'Content-Type': 'application/json' });
             res.end(JSON.stringify({
                 success: true,
                 phoneNumber,
-                pairingCode,
+                pairingCode
             }));
             
-            console.log(`✅ Real pairing code ready for ${phoneNumber}: ${pairingCode}`);
         } catch (error) {
             console.error('❌ Pairing code error:', error);
+            
+            let errorMessage = error.message;
+            if (errorMessage.includes('check phone number')) {
+                errorMessage = 'Please check your phone number and try again (include country code, no +).';
+            } else if (errorMessage.includes('not registered')) {
+                errorMessage = 'This number is not registered on WhatsApp.';
+            }
+            
             res.writeHead(500, { 'Content-Type': 'application/json' });
-            res.end(JSON.stringify({ error: error.message }));
+            res.end(JSON.stringify({ error: errorMessage }));
         }
     });
     return;
