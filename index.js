@@ -331,7 +331,7 @@ http.createServer(async (req, res) => {
                 logger: pino({ level: 'silent' }),
                 printQRInTerminal: false,
                 auth: state,
-                browser: ['ABZTech', 'Chrome', '1.0.0']
+                browser: [ "Ubuntu", "Chrome", "20.0.04" ]
             });
             
             // Give it a few seconds to connect
